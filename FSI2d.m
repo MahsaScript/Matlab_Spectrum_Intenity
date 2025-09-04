@@ -1,0 +1,440 @@
+clc
+clear all
+close all
+
+% addpath('C:\Users\aj0036\OneDrive\Downloads\Telegram Desktop\139912140');
+% cd 'C:\Users\aj0036\OneDrive\Downloads\Telegram Desktop\139912140'
+
+
+addpath('C:\Users\mofid\Downloads\1-Code2\Code\139912140');
+cd 'C:\Users\mofid\Downloads\1-Code2\Code\139912140'
+
+
+scans = avantesSpectrumRead;
+frequency = scans(1).wvl;
+
+cc = 'gauss4';
+clims = [540 570]; 
+tune = 7;
+
+bscans = scans;
+
+first = 450;
+last = 882;
+
+picshow = 603;
+ppf = picshow - first + 1;
+freq = bscans(1).wvl(first:last);
+pfreq = bscans(1).wvl(picshow:last);
+
+Lambda_Tresh = 538;
+
+xstd=59;
+y=29;
+
+varA=[]; 
+varC=[];
+
+varAP=[]; 
+varCP=[];
+
+varAPNew=[]; 
+varCPNew=[];
+
+
+N = length(scans) ;  % Total number of files
+
+for i = 1 : N
+    LaserRemove1(i,:) = medfilt1(bscans(i).signal(first:last),5);
+    LaserRemove2(i,:) = filloutliers(LaserRemove1(i,:),'nearest','mean');
+    LaserRemove3(i,:) = smoothdata(LaserRemove2(i,:));
+    laserf(i,:) = LaserRemove3(i,ppf:length(LaserRemove3(i,:)));
+    data(i,:) = bscans(i).signal(first:last);
+
+    [val,loc] = max(laserf(i,:));
+    varA=[varA;val];
+    varC=[varC;pfreq(loc)];
+    
+    P = findpeaksG(bscans(i).wvl(first:last),LaserRemove3(i,:),1,1,tune,tune,3);
+    [numRows,numCols] = size(P);
+    
+    valP = P(numRows,3);
+    pp = P(numRows,2);
+    
+    varAP=[varAP;valP];
+    varCP=[varCP;pp];
+    
+    xx = bscans(i).wvl(first:last);
+    yy = LaserRemove3(i,:);
+
+%     [Results,LowestError,baseline,BestStart,coeff,xi,yi]=peakfitNew([xx' yy'],.4,0,3,1,0,10);
+    [Results,LowestError,baseline,BestStart,coeff,xi,yi]=peakfit([xx' yy'],0,0,3,33,0,10);
+     if Results(1,2) > Lambda_Tresh
+        
+        valPNew = Results(1,3);
+        ppNew = Results(1,2);
+    
+    else
+        
+        valPNew = Results(2,3);
+        ppNew = Results(2,2);
+    
+    end        
+    
+    varAPNew=[varAPNew;valPNew];
+    varCPNew=[varCPNew;ppNew];
+    %% Define execution parameters.
+fs = 700 ;           % Sampling frequency [Hz].
+% Noise (AC interference) parameters.
+A0 = 250;   % (Peak) amplitude [uV].
+fd = 50;    % Frequency [Hz].
+phi = 15;   % Phase [deg].
+
+
+% Filtering parameters.
+BW = 0.8;   % Notch bandwidth [Hz].
+M = 10;     % Number of initial samples to consider for the transient
+            % suppression technique.
+
+
+%% Load data. 
+
+% Data is contained in "sig.mat".
+% fs            Sampling frequency [Hz].
+% load sig;
+
+s_n = P;              % To follow paper's notation.
+
+% Original data consists of M second recording.
+% For simplicity, we will consider only the first M/2 s.
+s_n = s_n(1:end/2);
+
+
+%% Calculate important parameters.
+
+N = numel(s_n);                 % Number of samples.
+Ts = 1/fs;                      % Sampling period [s].
+t = linspace(0, (N-1)*Ts, N);   % Time vector [s].
+
+w0 = 2 * pi * (fd/fs);          % Notch frequency [rad/s].
+omega = 2 * pi * (BW/fs);       % Bandwidth [rad/s].
+
+
+%% Contaminate original signal.
+
+% Create noise, i.e. Sig interference (Eq. 4).
+d_n = A0 * sin((2 * pi * fd) .* t + deg2rad(phi));
+
+% Add the original signal with the noise (Eq, 3).
+x_n = s_n + d_n;
+
+
+%% Filtering process 1 (conventional).
+
+% 1. Calculate a1 and a2 coefficients using Eq. 2.
+a1 = (2 * cos(w0)) / (1 + tan(omega/2));
+a2 = (1 - tan(omega/2)) / (1 + tan(omega/2));
+
+% 2. Choose arbitrary initial conditions (x[-1], x[-2], y[-1], y[-2]).
+x_1 = 0;    % x[-1].
+x_2 = 0;	% x[-2].
+y_1 = 0;	% y[-1].
+y_2 = 0;	% y[-2].
+
+% 3. From n = 0 to N,  calculate the output, given by Eq. my5.
+
+% Manually calculate the first two samples (for sake of clarity).
+y_n(1) = 0.5 * ((1 + a2)* x_n(1) - 2*a1*x_1    + (1 + a2)*x_2) + (a1*y_1)    - (a2*(y_2));
+y_n(2) = 0.5 * ((1 + a2)* x_n(2) - 2*a1*x_n(1) + (1 + a2)*x_1) + (a1*y_n(1)) - (a2*y_1);
+
+for n = 3:N
+    y_n(n) = 0.5 * ((1 + a2)* x_n(1,n) - 2*a1*x_n(n-1) + (1 + a2)*x_n(n-2)) + (a1*y_n(n-1)) - (a2*y_n(n-2));
+end
+
+ecgFilt1 = y_n;
+
+
+%% Filtering process 2 (notch filtering with transient state suppression).
+y_n = TransientSuppression(x_n, fs, fd, BW, 5);
+ecgFilt2 = y_n;
+
+
+%% Plots.
+
+figure('Name', 'Input Signal');
+subplot(3,1,1);
+plot(t,s_n,'b');
+title('Original signal (Clean) ');
+ylabel('Amplitude [\muV]')
+subplot(3,1,2);
+plot(t,d_n,'b');
+title('Noise (signal Interference)');
+ylabel('Amplitude [\muV]')
+subplot(3,1,3);
+plot(t,x_n,'b');
+title('signal + Noise');
+xlabel('Time [s]');
+ylabel('Amplitude [\muV]')
+
+figure('Name','Filtering Comparison');
+subplot(3,1,1);
+plot(t,s_n,'b');
+title('Original (Clean) signal');
+ylabel('Amplitude [\muV]')
+subplot(3,1,2);
+plot(t,ecgFilt1,'b');
+title('Filtered signal (Conventional Method)');
+ylabel('Amplitude [\muV]')
+subplot(3,1,3);
+plot(t,ecgFilt2,'b');
+title('Filtered signal (Transient Suppression Method)');
+xlabel('Time [s]');
+ylabel('Amplitude [\muV]')
+
+imageX = [1:t];
+imageY = [1:length(ecgFilt1)];
+
+figure(10); 
+IblurSNew = imgaussfilt(ecgFilt1,2);
+normaNew = IblurSNew;% - max(IblurS(:));
+IblurSNew = normaNew;% ./ min(norma(:));
+colormap(jet)
+imagesc(imageX,imageY,IblurSNew', clims)
+saveas(gcf,'IXshift','tiff');
+
+colorbar
+title('Wavelength')
+xlabel('Sample Rows');
+ylabel('Sample Columns');
+
+
+savefig('Xsfift.fig');
+
+figure(11); 
+IblurINew = imgaussfilt(ecgFilt2,2);
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+normaNew = IblurINew - min(IblurINew(:));
+IblurINew = normaNew ./ max(normaNew(:));
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+colormap(jet)
+imagesc(imageX,imageY,IblurINew')
+saveas(gcf,'IXintensity','tiff');
+colorbar
+title('Intensity')
+xlabel('Sample Rows');
+ylabel('Sample Columns');
+
+
+    % if Results(1,2) > Lambda_Tresh
+    % 
+    %     valPNew = Results(1,3);
+    %     ppNew = Results(1,2);
+    % 
+    % else
+    % 
+    %     valPNew = Results(2,3);
+    %     ppNew = Results(2,2);
+    % 
+    % end        
+    % 
+    % varAPNew=[varAPNew;valPNew];
+    % varCPNew=[varCPNew;ppNew];
+    % 
+    % 
+end
+
+
+% xx = bscans(1).wvl(first:last);
+% yy = LaserRemove3(1,:);
+% f = fit(xx.',yy.',cc);
+% 
+% M = [bscans(kk).wvl(first:last) LaserRemove3(kk,:)];
+% 
+% figure(22);
+% [Results,LowestError,baseline,BestStart,coeff,xi,yi]=peakfit([xx' yy'],.4,0,2,1,0,10);
+% figure(21);
+% [Results,LowestError,baseline,BestStart,coeff,xi,yi]=peakfit([xx' yy'],0,0,2,33,0,10);
+% figure(20); plot(xi,yi);
+% title('Plot of model peaks evaluated at 600 x-values')
+
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% %%%%%%          First Algorithm
+% 
+% 
+% j=1; k=y;    
+% rowS=[];
+% rowINew=[];
+% for T= 1 : xstd
+%     if mod(T,2)==1
+%     rowS=[rowS varC(j:k)];
+%     rowINew=[rowINew varA(j:k)];
+%     else
+%     rowS=[rowS flipud(varC(j:k))];
+%     rowINew=[rowINew flipud(varA(j:k))];
+%     end
+% 
+%     k=k+y;
+%     j=j+y;
+% 
+% end
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 
+% imageX = [1:y];
+% imageY = [1:xstd];
+% 
+% figure(10); 
+% IblurSNew = imgaussfilt(rowS,2);
+% normaNew = IblurSNew;% - max(IblurS(:));
+% IblurSNew = normaNew;% ./ min(norma(:));
+% colormap(jet)
+% imagesc(imageX,imageY,IblurSNew', clims)
+% saveas(gcf,'IXshift','tiff');
+% 
+% colorbar
+% title('Wavelength')
+% xlabel('Sample Rows');
+% ylabel('Sample Columns');
+% 
+% 
+% savefig('Xsfift.fig');
+% 
+% figure(11); 
+% IblurINew = imgaussfilt(rowINew,2);
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% normaNew = IblurINew - min(IblurINew(:));
+% IblurINew = normaNew ./ max(normaNew(:));
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% colormap(jet)
+% imagesc(imageX,imageY,IblurINew')
+% saveas(gcf,'IXintensity','tiff');
+% colorbar
+% title('Intensity')
+% xlabel('Sample Rows');
+% ylabel('Sample Columns');
+% 
+% 
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% %%%%%%          Second Algorithm
+% 
+% 
+% 
+% j=1; k=y;    
+% rowSP=[];
+% rowIP=[];
+% for T= 1 : xstd
+%     if mod(T,2)==1
+%     rowSP=[rowSP varCP(j:k)];
+%     rowIP=[rowIP varAP(j:k)];
+%     else
+%     rowSP=[rowSP flipud(varCP(j:k))];
+%     rowIP=[rowIP flipud(varAP(j:k))];
+%     end
+% 
+%     k=k+y;
+%     j=j+y;
+% 
+% end
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 
+% imageX = [1:y];
+% imageY = [1:xstd];
+% 
+% figure(20); 
+% IblurSP = imgaussfilt(rowSP,2);
+% normaP = IblurSP;% - max(IblurS(:));
+% IblurSP = normaP;% ./ min(norma(:));
+% colormap(jet)
+% imagesc(imageX,imageY,IblurSP', clims)
+% saveas(gcf,'IXshift','tiff');
+% 
+% colorbar
+% title('Wavelength')
+% xlabel('Sample Rows');
+% ylabel('Sample Columns');
+% 
+% savefig('Xsfift.fig');
+% 
+% figure(21); 
+% IblurIP = imgaussfilt(rowIP,2);
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% normaP = IblurIP - min(IblurIP(:));
+% IblurIP = normaP ./ max(normaP(:));
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% colormap(jet)
+% imagesc(imageX,imageY,IblurIP')
+% saveas(gcf,'IXintensity','tiff');
+% colorbar
+% title('Intensity')
+% xlabel('Sample Rows');
+% ylabel('Sample Columns');
+% 
+% 
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% %%%%%%%%    Third Algorithm
+% 
+% j=1; k=y;    
+% rowSNew=[];
+% rowINew=[];
+% for T= 1 : xstd
+%     if mod(T,2)==1
+%     rowSNew=[rowSNew varCPNew(j:k)];
+%     rowINew=[rowINew varAPNew(j:k)];
+%     else
+%     rowSNew=[rowSNew flipud(varCPNew(j:k))];
+%     rowINew=[rowINew flipud(varAPNew(j:k))];
+%     end
+% 
+%     k=k+y;
+%     j=j+y;
+% 
+% end
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 
+% imageX = [1:y];
+% imageY = [1:xstd];
+% 
+% figure(30); 
+% IblurSNew = imgaussfilt(rowSNew,2);
+% normaNew = IblurSNew;% - max(IblurS(:));
+% IblurSNew = normaNew;% ./ min(norma(:));
+% colormap(jet)
+% imagesc(imageX,imageY,IblurSNew', clims)
+% saveas(gcf,'IXshift','tiff');
+% 
+% colorbar
+% title('Wavelength')
+% xlabel('Sample Rows');
+% ylabel('Sample Columns');
+% 
+% savefig('Xsfift.fig');
+% 
+% figure(31); 
+% IblurINew = imgaussfilt(rowINew,2);
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% normaNew = IblurINew - min(IblurINew(:));
+% IblurINew = normaNew ./ max(normaNew(:));
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% colormap(jet)
+% imagesc(imageX,imageY,IblurINew')
+% saveas(gcf,'IXintensity','tiff');
+% colorbar
+% title('Intensity')
+% xlabel('Sample Rows');
+% ylabel('Sample Columns');
+% 
+% STDP = std(IblurSNew');
+% STDP2 = std2(IblurSNew')
+% MeanP = mean(IblurSNew');
+% MeanP2 = mean2(IblurSNew')
+% Error = MeanP-MeanP2;
+% E = std(IblurSNew').*ones(size(MeanP));
+% 
+% xstd = (1:length(MeanP));
+% figure(40); errorbar(xstd,MeanP,E);
+% % ylim([540 570]);
+% xlabel('Number of Samples');
+% ylabel('Wavelength');
